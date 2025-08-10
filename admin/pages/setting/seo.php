@@ -3,32 +3,93 @@ include_once "../../../inc/lib/base.class.php";
 
 $pageName = "페이지별 SEO";
 $depthnum = 10;
-$pagenum = 3;
-
-$perpage = 10;
-$listCurPage = (int)($_REQUEST['page'] ?? 1);
-$pageBlock = 2;
-$count = ($listCurPage - 1) * $perpage;
+$pagenum  = 3;
 
 $db = DB::getInstance();
 
-$totalStmt = $db->query("SELECT COUNT(*) FROM nb_branch_seos");
-$totalCount = (int)$totalStmt->fetchColumn();
-$Page = ceil($totalCount / $perpage);
+/* =============================
+ * 페이지네이션
+ * ============================= */
+$perpage     = 10;
+$listCurPage = isset($_REQUEST['page']) ? (int)$_REQUEST['page'] : 1;
+if ($listCurPage < 1) $listCurPage = 1;
+$pageBlock   = 2;
+$offset      = ($listCurPage - 1) * $perpage;
 
-// 데이터 조회
-$sql = "
-    SELECT s.id, s.branch_id, b.name_kr AS branch_label, s.path, s.page_title, s.meta_title, s.updated_at
+/* =============================
+ * 지점 데이터 (검색용)
+ * ============================= */
+$branchesStmt = $db->prepare("SELECT id, name_kr FROM nb_branches ORDER BY id ASC");
+$branchesStmt->execute();
+$branches = $branchesStmt->fetchAll(PDO::FETCH_ASSOC);
+
+/* =============================
+ * 필터 파라미터
+ * ============================= */
+$branch_id     = isset($_GET['branch_id']) ? trim($_GET['branch_id']) : '';
+$searchColumn  = isset($_GET['searchColumn']) ? trim($_GET['searchColumn']) : '';
+$searchKeyword = isset($_GET['searchKeyword']) ? trim($_GET['searchKeyword']) : '';
+
+/* =============================
+ * WHERE + 파라미터
+ * ============================= */
+$where  = "WHERE 1=1";
+$params = [];
+
+if ($branch_id !== '') {
+    $where .= " AND s.branch_id = :branch_id";
+    $params[':branch_id'] = (int)$branch_id;
+}
+if ($searchColumn !== '' && $searchKeyword !== '') {
+    // 실제 컬럼만 허용
+    $allowed = ['path','page_title','meta_title'];
+    if (in_array($searchColumn, $allowed, true)) {
+        $where .= " AND s.{$searchColumn} LIKE :kw";
+        $params[':kw'] = "%{$searchKeyword}%";
+    }
+}
+
+/* =============================
+ * 총 개수 → 전체 페이지
+ * ============================= */
+$countSql = "
+    SELECT COUNT(*)
     FROM nb_branch_seos s
     LEFT JOIN nb_branches b ON s.branch_id = b.id
+    {$where}
+";
+$countStmt = $db->prepare($countSql);
+$countStmt->execute($params);
+$totalCount = (int)$countStmt->fetchColumn();
+$Page = (int)ceil($totalCount / $perpage);
+
+// 범위 보정
+if ($Page > 0 && $listCurPage > $Page) {
+    $listCurPage = $Page;
+    $offset = ($listCurPage - 1) * $perpage;
+}
+
+/* =============================
+ * 데이터 조회 (동일 WHERE + LIMIT)
+ * ============================= */
+$sql = "
+    SELECT 
+        s.id, s.branch_id, b.name_kr AS branch_label, 
+        s.path, s.page_title, s.meta_title, s.updated_at
+    FROM nb_branch_seos s
+    LEFT JOIN nb_branches b ON s.branch_id = b.id
+    {$where}
     ORDER BY s.id DESC
-    LIMIT {$count}, {$perpage}
+    LIMIT :offset, :perpage
 ";
 $stmt = $db->prepare($sql);
+foreach ($params as $k => $v) {
+    $stmt->bindValue($k, $v);
+}
+$stmt->bindValue(':offset',  $offset,  PDO::PARAM_INT);
+$stmt->bindValue(':perpage', $perpage, PDO::PARAM_INT);
 $stmt->execute();
 $seoRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-
 ?>
 
 <!--=====================HEAD========================= -->
@@ -45,7 +106,7 @@ $seoRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
             <!--=====================DRAWER========================= -->
             <?php include_once "../../inc/admin.drawer.php"; ?>
 
-            <form method="POST" name="frm" id="frm" autocomplete="off">
+            <form method="GET" name="frm" id="frm" autocomplete="off">
                 <input type="hidden" name="mode" id="mode" value="list">
 
                 <section class="no-content">
@@ -65,6 +126,58 @@ $seoRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
                             </div>
                         </div>
                     </div>
+
+
+                    <!-- 검색 조건 -->
+                    <div class="no-search no-toolbar-container">
+                        <div class="no-card">
+                            <div class="no-card-header">
+                                <h2 class="no-card-title"><?= $pageName ?> 검색</h2>
+                            </div>
+                            <div class="no-card-body no-admin-column">
+
+                                <!-- 지점 선택 -->
+                                <div class="no-admin-block">
+                                    <h3 class="no-admin-title">지점</h3>
+                                    <div class="no-admin-content">
+                                        <select name="branch_id" id="branch_category">
+                                            <option value="">전체</option>
+                                            <?php foreach ($branches as $b): ?>
+                                            <option value="<?= $b['id'] ?>"
+                                                <?= ($branch_id ?? '') == $b['id'] ? 'selected' : '' ?>>
+                                                <?= htmlspecialchars($b['name_kr']) ?>
+                                            </option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <!-- 검색어 -->
+                                <div class="no-admin-block wide">
+                                    <h3 class="no-admin-title">검색어</h3>
+                                    <div class="no-search-select">
+                                        <div class="no-search-wrap">
+                                            <div class="no-search-input">
+                                                <i class="bx bx-search-alt-2"></i>
+                                                <input type="text" name="searchKeyword" id="searchKeyword"
+                                                    placeholder="검색어 입력"
+                                                    value="<?= htmlspecialchars($searchKeyword ?? '') ?>">
+                                            </div>
+                                            <div class="no-search-btn">
+                                                <button type="submit" class="no-btn no-btn--main no-btn--search">
+                                                    검색
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                            </div>
+                        </div>
+                    </div>
+
+
+
 
                     <div class="no-content-container">
                         <div class="no-card">
